@@ -1,0 +1,6 @@
+{
+  "name": "Aura Sound - Android Музыкальный Плеер",
+  "description": "Плеер для Android с доступом к памяти телефона, Яндекс Музыкой, сетевым NAS хранилищем, 10-полосным эквалайзером, поддержкой M3U плейлистов, кастомизацией кнопок и шрифтов, и виджетами на рабочий стол.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
