@@ -44,6 +44,7 @@ import { NowPlayingFull } from './components/NowPlayingFull';
 import { EqualizerModal } from './components/EqualizerModal';
 import { CustomizationModal } from './components/CustomizationModal';
 import { AddToPlaylistModal } from './components/AddToPlaylistModal';
+import { AndroidInstallModal } from './components/AndroidInstallModal';
 
 type ActiveTab = 'library' | 'yandex' | 'nas' | 'playlists' | 'widget';
 
@@ -89,6 +90,7 @@ export default function App() {
   const [isFullPlayerOpen, setIsFullPlayerOpen] = useState(false);
   const [isEqualizerOpen, setIsEqualizerOpen] = useState(false);
   const [isCustomizationOpen, setIsCustomizationOpen] = useState(false);
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [playlistModalTrack, setPlaylistModalTrack] = useState<Track | null>(null);
 
   // Settings
@@ -355,18 +357,16 @@ export default function App() {
 
           {/* Quick Action Buttons */}
           <div className="flex items-center gap-1.5 sm:gap-2">
-            {/* PWA Install Button */}
-            {isInstallable && (
-              <button
-                onClick={install}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold text-black flex items-center gap-1.5 shadow-md animate-pulse transition active:scale-95"
-                style={{ backgroundColor: accent }}
-                title="Установить Aura Sound как приложение на телефон"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Установить PWA</span>
-              </button>
-            )}
+            {/* Install APK / PWA Button */}
+            <button
+              onClick={() => setIsInstallModalOpen(true)}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold text-black flex items-center gap-1.5 shadow-md transition hover:scale-105 active:scale-95"
+              style={{ backgroundColor: accent }}
+              title="Установить Aura Sound на телефон (.APK / PWA)"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Установить .APK</span>
+            </button>
 
             {/* Equalizer Quick Modal */}
             <button
@@ -575,6 +575,15 @@ export default function App() {
         playlists={playlists}
         onRefreshPlaylists={refreshLibrary}
         themeSettings={themeSettings}
+      />
+
+      {/* Android Install & APK Modal */}
+      <AndroidInstallModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
+        themeSettings={themeSettings}
+        isInstallable={isInstallable}
+        onInstallPWA={install}
       />
     </div>
   );
