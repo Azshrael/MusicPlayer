@@ -1,17 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  HardDrive, 
-  Radio, 
-  Server, 
-  ListMusic, 
-  Smartphone, 
+  Menu, 
+  Music, 
   Sliders, 
   Palette, 
-  Download, 
-  Music, 
-  Volume2, 
-  CheckCircle2, 
-  Share2 
+  FolderSearch, 
+  ArrowLeft, 
+  AlertCircle, 
+  ListMusic, 
+  Users, 
+  Music2,
+  HardDrive
 } from 'lucide-react';
 import { 
   Track, 
@@ -24,29 +23,35 @@ import {
 import { 
   getAllTracks, 
   saveTrack, 
+  deleteTrack,
+  getAudioBlob,
   getAllPlaylists, 
   savePlaylist, 
   getSetting, 
   saveSetting 
 } from './services/db';
-import { INITIAL_SAMPLE_TRACKS } from './services/sampleTracks';
 import { audioEngine, DEFAULT_EQ_STATE } from './services/audioEngine';
-import { usePWAInstall } from './hooks/usePWAInstall';
+import { 
+  verifyAndCleanTracks, 
+  removeObsoleteTrack 
+} from './services/phoneStorageScanner';
 
 // Views and Modals
 import { LibraryView } from './components/LibraryView';
+import { PlaylistsView } from './components/PlaylistsView';
+import { ArtistsView } from './components/ArtistsView';
 import { YandexMusicView } from './components/YandexMusicView';
 import { NasStorageView } from './components/NasStorageView';
-import { PlaylistsView } from './components/PlaylistsView';
 import { AndroidHomeScreen } from './components/AndroidHomeScreen';
 import { MiniPlayer } from './components/MiniPlayer';
 import { NowPlayingFull } from './components/NowPlayingFull';
 import { EqualizerModal } from './components/EqualizerModal';
 import { CustomizationModal } from './components/CustomizationModal';
 import { AddToPlaylistModal } from './components/AddToPlaylistModal';
-import { AndroidInstallModal } from './components/AndroidInstallModal';
+import { NavigationMenu, MusicSource } from './components/NavigationMenu';
+import { StorageScannerModal } from './components/StorageScannerModal';
 
-type ActiveTab = 'library' | 'yandex' | 'nas' | 'playlists' | 'widget';
+type MainScreenTab = 'tracks' | 'playlists' | 'artists';
 
 const DEFAULT_THEME: ThemeSettings = {
   themeMode: 'amoled',
@@ -74,8 +79,11 @@ const DEFAULT_YANDEX: YandexSettings = {
 };
 
 export default function App() {
-  // Navigation & State
-  const [activeTab, setActiveTab] = useState<ActiveTab>('library');
+  // Navigation
+  const [activeSource, setActiveSource] = useState<MusicSource>('local');
+  const [mainScreenTab, setMainScreenTab] = useState<MainScreenTab>('tracks');
+
+  // Core Audio Data (Starts 100% clean and empty without generated sample filler)
   const [tracks, setTracks] = useState<Track[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
@@ -86,12 +94,14 @@ export default function App() {
   const [isShuffle, setIsShuffle] = useState(false);
   const [repeatMode, setRepeatMode] = useState<'off' | 'all' | 'one'>('off');
 
-  // Modals
+  // Modals & Drawers
+  const [isNavMenuOpen, setIsNavMenuOpen] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isFullPlayerOpen, setIsFullPlayerOpen] = useState(false);
   const [isEqualizerOpen, setIsEqualizerOpen] = useState(false);
   const [isCustomizationOpen, setIsCustomizationOpen] = useState(false);
-  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [playlistModalTrack, setPlaylistModalTrack] = useState<Track | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Settings
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(DEFAULT_THEME);
@@ -99,58 +109,35 @@ export default function App() {
   const [eqState, setEqState] = useState<EqualizerState>(DEFAULT_EQ_STATE);
   const [yandexSettings, setYandexSettings] = useState<YandexSettings>(DEFAULT_YANDEX);
 
-  // PWA Install prompt hook
-  const { isInstallable, install } = usePWAInstall();
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? null : prev));
+    }, 4000);
+  };
 
-  // Load Initial Data from IndexedDB
+  // Load Real User Library (no auto-seeding mock tracks)
   const refreshLibrary = async () => {
-    let dbTracks = await getAllTracks();
-    if (dbTracks.length === 0) {
-      // Seed with initial high-res sample tracks (FLAC, WAV, MP3)
-      for (const t of INITIAL_SAMPLE_TRACKS) {
-        await saveTrack(t);
+    const dbTracks = await getAllTracks();
+    // Filter out any legacy demo filler tracks if present from previous sessions
+    const realTracks = dbTracks.filter((t) => t.source !== 'demo');
+    if (realTracks.length !== dbTracks.length) {
+      for (const t of dbTracks) {
+        if (t.source === 'demo') await deleteTrack(t.id);
       }
-      dbTracks = await getAllTracks();
     }
-    setTracks(dbTracks);
+    setTracks(realTracks);
 
-    // Initial playlists
-    let dbPlaylists = await getAllPlaylists();
-    if (dbPlaylists.length === 0) {
-      const defaultPlaylists: Playlist[] = [
-        {
-          id: 'pl-favorites',
-          name: 'Избранное',
-          description: 'Любимые треки из памяти и стриминга',
-          trackIds: dbTracks.filter((t) => t.isFavorite).map((t) => t.id),
-          createdAt: Date.now(),
-          coverArt: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?auto=format&fit=crop&w=600&q=80',
-        },
-        {
-          id: 'pl-hires',
-          name: 'Hi-Res Lossless Collection',
-          description: 'Студийные треки в форматах FLAC и WAV',
-          trackIds: dbTracks.filter((t) => t.format === 'flac' || t.format === 'wav').map((t) => t.id),
-          createdAt: Date.now(),
-          isM3U: true,
-          coverArt: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?auto=format&fit=crop&w=600&q=80',
-        },
-      ];
-      for (const p of defaultPlaylists) {
-        await savePlaylist(p);
-      }
-      dbPlaylists = await getAllPlaylists();
-    }
+    const dbPlaylists = await getAllPlaylists();
     setPlaylists(dbPlaylists);
 
-    // Initial track if none selected
-    if (!currentTrack && dbTracks.length > 0) {
-      setCurrentTrack(dbTracks[0]);
+    // If current track is no longer in tracks, reset it
+    if (currentTrack && !realTracks.some((t) => t.id === currentTrack.id)) {
+      setCurrentTrack(realTracks.length > 0 ? realTracks[0] : null);
     }
   };
 
   useEffect(() => {
-    // Load persisted settings
     (async () => {
       const savedTheme = await getSetting('themeSettings', DEFAULT_THEME);
       setThemeSettings(savedTheme);
@@ -173,22 +160,33 @@ export default function App() {
   useEffect(() => {
     audioEngine.setOnTimeUpdate((time, dur) => {
       setCurrentTime(time);
-      setDuration(dur);
+      if (dur > 0) setDuration(dur);
     });
 
     audioEngine.setOnTrackEnded(() => {
       handleNextTrack();
     });
-  }, [tracks, currentTrack, isShuffle, repeatMode]);
 
-  // Android MediaSession API (Lockscreen & Notification controls)
+    // Handle track playback error (e.g. file was moved or deleted from phone storage)
+    audioEngine.setOnTrackError(async () => {
+      if (currentTrack && currentTrack.source === 'local') {
+        const deadTrack = currentTrack;
+        await removeObsoleteTrack(deadTrack.id);
+        await refreshLibrary();
+        showToast(`Файл «${deadTrack.filePath || deadTrack.title}» удален или перемещен. Неактуальный путь удален.`);
+        handleNextTrack();
+      }
+    });
+  }, [currentTrack, tracks, isShuffle, repeatMode]);
+
+  // MediaSession API integration for Android lockscreen & notification shade
   useEffect(() => {
-    if (!currentTrack || !('mediaSession' in navigator)) return;
+    if (!('mediaSession' in navigator) || !currentTrack) return;
 
     navigator.mediaSession.metadata = new MediaMetadata({
       title: currentTrack.title,
       artist: currentTrack.artist,
-      album: currentTrack.album || 'Aura Sound Android',
+      album: currentTrack.album || 'Aura Sound',
       artwork: [
         { src: currentTrack.coverArt, sizes: '96x96', type: 'image/png' },
         { src: currentTrack.coverArt, sizes: '256x256', type: 'image/png' },
@@ -207,17 +205,42 @@ export default function App() {
     });
   }, [currentTrack]);
 
-  // Playback Control Handlers
+  // Playback Handlers
   const handleSelectTrack = async (track: Track) => {
     if (currentTrack?.id === track.id) {
       handleTogglePlay();
       return;
     }
 
+    let audioUrl = track.url;
+
+    // Local track: check if file / blob is accessible
+    if (track.source === 'local') {
+      const blob = await getAudioBlob(track.id);
+      if (!blob || blob.size === 0) {
+        // Obsolete / deleted file: clean from database immediately
+        console.warn(`File missing for track ${track.title} at path ${track.filePath}`);
+        await removeObsoleteTrack(track.id);
+        await refreshLibrary();
+        showToast(`Файл не найден по пути: ${track.filePath || track.title}. Неактуальный путь удален.`);
+        return;
+      }
+      audioUrl = URL.createObjectURL(blob);
+    }
+
     setCurrentTrack(track);
-    await audioEngine.loadTrack(track.url);
-    audioEngine.play();
-    setIsPlaying(true);
+    try {
+      await audioEngine.loadTrack(audioUrl);
+      await audioEngine.play();
+      setIsPlaying(true);
+    } catch (err) {
+      console.error('Audio play error:', err);
+      if (track.source === 'local') {
+        await removeObsoleteTrack(track.id);
+        await refreshLibrary();
+        showToast(`Не удалось открыть файл «${track.title}». Неактуальный путь удален.`);
+      }
+    }
   };
 
   const handleTogglePlay = () => {
@@ -278,18 +301,18 @@ export default function App() {
     setCurrentTime(seconds);
   };
 
-  const handleVolumeChange = (vol: number) => {
-    setVolume(vol);
-    audioEngine.setVolume(vol);
+  const handleVolumeChange = (newVol: number) => {
+    setVolume(newVol);
+    audioEngine.setVolume(newVol);
   };
 
   const handleToggleFavorite = async (trackId: string) => {
-    const updated = tracks.map((t) =>
-      t.id === trackId ? { ...t, isFavorite: !t.isFavorite } : t
-    );
+    const updated = tracks.map((t) => (t.id === trackId ? { ...t, isFavorite: !t.isFavorite } : t));
     setTracks(updated);
-    const track = updated.find((t) => t.id === trackId);
-    if (track) await saveTrack(track);
+    const target = updated.find((t) => t.id === trackId);
+    if (target) {
+      await saveTrack(target);
+    }
   };
 
   const handlePlayPlaylist = (playlist: Playlist) => {
@@ -299,76 +322,114 @@ export default function App() {
     }
   };
 
-  // Persistent Settings Updates
-  const handleUpdateTheme = async (settings: ThemeSettings) => {
-    setThemeSettings(settings);
-    await saveSetting('themeSettings', settings);
+  const handlePlayArtist = (artistTracks: Track[]) => {
+    if (artistTracks.length > 0) {
+      handleSelectTrack(artistTracks[0]);
+    }
   };
 
-  const handleUpdateWidget = async (settings: WidgetSettings) => {
-    setWidgetSettings(settings);
-    await saveSetting('widgetSettings', settings);
+  // Verify paths & clean obsolete/moved tracks
+  const handleVerifyPaths = async () => {
+    const { removedCount } = await verifyAndCleanTracks(tracks);
+    await refreshLibrary();
+    if (removedCount > 0) {
+      showToast(`Удалено ${removedCount} неактуальных путей: файлы были перемещены или удалены.`);
+    } else {
+      showToast('Все пути к файлам проверены и актуальны.');
+    }
   };
 
-  const handleUpdateEQ = async (state: EqualizerState) => {
-    setEqState(state);
-    await saveSetting('eqState', state);
+  // Settings Handlers
+  const handleUpdateTheme = async (newTheme: ThemeSettings) => {
+    setThemeSettings(newTheme);
+    await saveSetting('themeSettings', newTheme);
   };
 
-  const handleUpdateYandex = async (settings: YandexSettings) => {
-    setYandexSettings(settings);
-    await saveSetting('yandexSettings', settings);
+  const handleUpdateWidget = async (newWidget: WidgetSettings) => {
+    setWidgetSettings(newWidget);
+    await saveSetting('widgetSettings', newWidget);
+  };
+
+  const handleUpdateEQ = async (newEQ: EqualizerState) => {
+    setEqState(newEQ);
+    audioEngine.applyEqualizerState(newEQ);
+    await saveSetting('eqState', newEQ);
+  };
+
+  const handleUpdateYandex = async (newYM: YandexSettings) => {
+    setYandexSettings(newYM);
+    await saveSetting('yandexSettings', newYM);
   };
 
   const accent = themeSettings.accentColor;
 
   return (
     <div 
-      className={`min-h-screen bg-slate-950 text-white ${themeSettings.fontFamily} flex flex-col justify-between selection:bg-cyan-500 selection:text-black`}
+      className={`min-h-screen flex flex-col font-${themeSettings.fontFamily} bg-black text-slate-100 selection:bg-cyan-500 selection:text-black`}
     >
-      {/* Top Application Bar */}
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl bg-slate-900/95 border border-white/20 text-white text-xs shadow-2xl flex items-center gap-2 animate-bounce">
+          <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Top Header */}
       <header 
         id="app-header"
         className="sticky top-0 z-30 backdrop-blur-xl bg-slate-950/85 border-b border-white/10 px-4 py-3 sm:px-6"
       >
         <div className="max-w-4xl mx-auto flex items-center justify-between">
-          {/* Logo & Platform Badge */}
+          {/* Left: Hamburger Menu Button & App Brand */}
           <div className="flex items-center gap-3">
-            <div 
-              className="w-10 h-10 rounded-2xl flex items-center justify-center font-black text-black shadow-lg shadow-cyan-500/20"
-              style={{ backgroundColor: accent }}
+            {/* Top-Left Menu Button (Requirement 5) */}
+            <button
+              id="btn-nav-menu"
+              onClick={() => setIsNavMenuOpen(true)}
+              className="w-10 h-10 rounded-2xl bg-white/10 hover:bg-white/15 active:scale-95 flex items-center justify-center text-white transition border border-white/5"
+              title="Открыть меню разделов и настроек"
             >
-              <Music className="w-5 h-5" />
-            </div>
-            <div>
+              <Menu className="w-5 h-5" />
+            </button>
+
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="text-base sm:text-lg font-black tracking-tight text-white">
+                <h1 className="text-base sm:text-lg font-black tracking-tight text-white truncate">
                   Aura Sound
                 </h1>
-                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-white/10 text-slate-300 border border-white/5">
-                  Android PWA
-                </span>
+                {activeSource !== 'local' && (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/10 text-cyan-300 border border-white/5 uppercase">
+                    {activeSource === 'yandex' ? 'Яндекс' : activeSource === 'nas' ? 'NAS' : 'Виджет'}
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] text-slate-400">
-                Hi-Res плеер: Память • Яндекс • NAS • Эквалайзер
+              <p className="text-[11px] text-slate-400 truncate">
+                {activeSource === 'local' 
+                  ? 'Внутренняя память телефона • Hi-Res 24-bit' 
+                  : activeSource === 'yandex'
+                  ? 'Яндекс Музыка'
+                  : activeSource === 'nas'
+                  ? 'NAS Сетевое хранилище'
+                  : 'Виджет рабочего стола Android'}
               </p>
             </div>
           </div>
 
-          {/* Quick Action Buttons */}
+          {/* Right Action Buttons */}
           <div className="flex items-center gap-1.5 sm:gap-2">
-            {/* Install APK / PWA Button */}
+            {/* Quick Scan Memory Button */}
             <button
-              onClick={() => setIsInstallModalOpen(true)}
-              className="px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold text-black flex items-center gap-1.5 shadow-md transition hover:scale-105 active:scale-95"
+              onClick={() => setIsScannerOpen(true)}
+              className="px-2.5 sm:px-3 py-2 rounded-xl text-xs font-bold text-black flex items-center gap-1.5 shadow-md transition hover:scale-105 active:scale-95"
               style={{ backgroundColor: accent }}
-              title="Установить Aura Sound на телефон (.APK / PWA)"
+              title="Сканировать память телефона"
             >
-              <Smartphone className="w-3.5 h-3.5" />
-              <span>Установить .APK</span>
+              <FolderSearch className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Сканировать</span>
             </button>
 
-            {/* Equalizer Quick Modal */}
+            {/* Quick Equalizer Button */}
             <button
               onClick={() => setIsEqualizerOpen(true)}
               className={`p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
@@ -379,17 +440,16 @@ export default function App() {
               title="Открыть 10-полосный эквалайзер"
             >
               <Sliders className="w-4 h-4" />
-              <span className="hidden sm:inline font-mono">EQ: {eqState.preset}</span>
+              <span className="hidden sm:inline font-mono">EQ</span>
             </button>
 
-            {/* Themes & Customization Modal */}
+            {/* Quick Theme Button */}
             <button
               onClick={() => setIsCustomizationOpen(true)}
               className="p-2 sm:px-3 sm:py-2 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-slate-200 flex items-center gap-1.5 transition"
-              title="Кастомизация кнопок, цветов и шрифтов"
+              title="Кастомизация"
             >
               <Palette className="w-4 h-4" />
-              <span className="hidden sm:inline">Тема</span>
             </button>
           </div>
         </div>
@@ -397,64 +457,129 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-4xl mx-auto w-full px-4 sm:px-6 pt-4 pb-28">
-        {/* Navigation Tabs Bar */}
-        <nav 
-          id="main-tabs"
-          className="flex gap-1.5 sm:gap-2 overflow-x-auto pb-3 mb-3 border-b border-white/5 no-scrollbar"
-        >
-          {[
-            { id: 'library' as ActiveTab, label: 'Память телефона', icon: HardDrive, count: tracks.length },
-            { id: 'yandex' as ActiveTab, label: 'Яндекс Музыка', icon: Radio, count: 'HQ' },
-            { id: 'nas' as ActiveTab, label: 'NAS Хранилище', icon: Server, count: 'WebDAV' },
-            { id: 'playlists' as ActiveTab, label: 'Списки M3U', icon: ListMusic, count: playlists.length },
-            { id: 'widget' as ActiveTab, label: 'Виджет на рабочий стол', icon: Smartphone, count: 'Android' },
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-3.5 py-2 rounded-2xl text-xs font-bold flex items-center gap-2 shrink-0 transition select-none ${
-                  isActive
-                    ? 'text-black shadow-lg shadow-cyan-500/10'
-                    : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
-                }`}
-                style={{
-                  backgroundColor: isActive ? accent : undefined,
-                }}
-              >
-                <Icon className="w-4 h-4" />
-                <span>{tab.label}</span>
-                <span 
-                  className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full ${
-                    isActive ? 'bg-black/20 text-black' : 'bg-white/10 text-slate-400'
-                  }`}
-                >
-                  {tab.count}
-                </span>
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Tab Views */}
-        {activeTab === 'library' && (
-          <LibraryView
-            tracks={tracks}
-            onSelectTrack={handleSelectTrack}
-            currentTrack={currentTrack}
-            isPlaying={isPlaying}
-            onTogglePlay={handleTogglePlay}
-            onRefreshTracks={refreshLibrary}
-            themeSettings={themeSettings}
-            onToggleFavorite={handleToggleFavorite}
-            onAddToPlaylistModal={(track) => setPlaylistModalTrack(track)}
-          />
+        {/* If user switched to another source in menu (Yandex, NAS, Widget), show return banner */}
+        {activeSource !== 'local' && (
+          <button
+            onClick={() => setActiveSource('local')}
+            className="mb-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-medium text-slate-200 transition"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Вернуться на главный экран (Внутренняя память)</span>
+          </button>
         )}
 
-        {activeTab === 'yandex' && (
+        {/* MAIN SCREEN (Внутренняя память): Exactly 3 tabs as requested in Requirement 5 */}
+        {activeSource === 'local' && (
+          <div className="space-y-4">
+            {/* 3 Main Screen Tabs */}
+            <nav 
+              id="main-screen-tabs"
+              className="grid grid-cols-3 gap-2 p-1.5 bg-slate-900/60 rounded-2xl border border-white/5 backdrop-blur-md"
+            >
+              <button
+                onClick={() => setMainScreenTab('tracks')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+                  mainScreenTab === 'tracks'
+                    ? 'text-black shadow-lg shadow-cyan-500/10'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+                style={{
+                  backgroundColor: mainScreenTab === 'tracks' ? accent : undefined,
+                }}
+              >
+                <Music2 className="w-3.5 h-3.5" />
+                <span>Треки</span>
+                <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full ${
+                  mainScreenTab === 'tracks' ? 'bg-black/20 text-black' : 'bg-white/10 text-slate-400'
+                }`}>
+                  {tracks.length}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setMainScreenTab('playlists')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+                  mainScreenTab === 'playlists'
+                    ? 'text-black shadow-lg shadow-cyan-500/10'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+                style={{
+                  backgroundColor: mainScreenTab === 'playlists' ? accent : undefined,
+                }}
+              >
+                <ListMusic className="w-3.5 h-3.5" />
+                <span>Плейлисты</span>
+                <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full ${
+                  mainScreenTab === 'playlists' ? 'bg-black/20 text-black' : 'bg-white/10 text-slate-400'
+                }`}>
+                  {playlists.length}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setMainScreenTab('artists')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition ${
+                  mainScreenTab === 'artists'
+                    ? 'text-black shadow-lg shadow-cyan-500/10'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+                style={{
+                  backgroundColor: mainScreenTab === 'artists' ? accent : undefined,
+                }}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Исполнители</span>
+              </button>
+            </nav>
+
+            {/* View 1: Список треков */}
+            {mainScreenTab === 'tracks' && (
+              <LibraryView
+                tracks={tracks}
+                onSelectTrack={handleSelectTrack}
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                onTogglePlay={handleTogglePlay}
+                onRefreshTracks={refreshLibrary}
+                themeSettings={themeSettings}
+                onToggleFavorite={handleToggleFavorite}
+                onAddToPlaylistModal={(track) => setPlaylistModalTrack(track)}
+                onOpenScanner={() => setIsScannerOpen(true)}
+              />
+            )}
+
+            {/* View 2: Группировка по плейлистам */}
+            {mainScreenTab === 'playlists' && (
+              <PlaylistsView
+                playlists={playlists}
+                tracks={tracks}
+                onSelectTrack={handleSelectTrack}
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                themeSettings={themeSettings}
+                onRefreshPlaylists={refreshLibrary}
+                onPlayPlaylist={handlePlayPlaylist}
+              />
+            )}
+
+            {/* View 3: Группировка по исполнителям (схемы: artist.title, artist - title, artist-title, artist title) */}
+            {mainScreenTab === 'artists' && (
+              <ArtistsView
+                tracks={tracks}
+                onSelectTrack={handleSelectTrack}
+                currentTrack={currentTrack}
+                isPlaying={isPlaying}
+                onTogglePlay={handleTogglePlay}
+                onPlayArtist={handlePlayArtist}
+                themeSettings={themeSettings}
+                onOpenScanner={() => setIsScannerOpen(true)}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Alternate Source: Yandex Music */}
+        {activeSource === 'yandex' && (
           <YandexMusicView
             onSelectTrack={handleSelectTrack}
             currentTrack={currentTrack}
@@ -467,7 +592,8 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'nas' && (
+        {/* Alternate Source: NAS Storage */}
+        {activeSource === 'nas' && (
           <NasStorageView
             onSelectTrack={handleSelectTrack}
             currentTrack={currentTrack}
@@ -477,20 +603,8 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'playlists' && (
-          <PlaylistsView
-            playlists={playlists}
-            tracks={tracks}
-            onSelectTrack={handleSelectTrack}
-            currentTrack={currentTrack}
-            isPlaying={isPlaying}
-            themeSettings={themeSettings}
-            onRefreshPlaylists={refreshLibrary}
-            onPlayPlaylist={handlePlayPlaylist}
-          />
-        )}
-
-        {activeTab === 'widget' && (
+        {/* Alternate Source: Android Widget Preview */}
+        {activeSource === 'widget' && (
           <AndroidHomeScreen
             currentTrack={currentTrack}
             isPlaying={isPlaying}
@@ -503,13 +617,13 @@ export default function App() {
             themeSettings={themeSettings}
             widgetSettings={widgetSettings}
             onUpdateWidgetSettings={handleUpdateWidget}
-            onReturnToPlayer={() => setActiveTab('library')}
+            onReturnToPlayer={() => setActiveSource('local')}
           />
         )}
       </main>
 
       {/* Floating Bottom Mini Player */}
-      {currentTrack && activeTab !== 'widget' && (
+      {currentTrack && activeSource !== 'widget' && (
         <MiniPlayer
           currentTrack={currentTrack}
           isPlaying={isPlaying}
@@ -522,7 +636,31 @@ export default function App() {
         />
       )}
 
-      {/* Fullscreen Player View */}
+      {/* Navigation Slide-Out Drawer Menu (Requirement 5) */}
+      <NavigationMenu
+        isOpen={isNavMenuOpen}
+        onClose={() => setIsNavMenuOpen(false)}
+        activeSource={activeSource}
+        onSelectSource={setActiveSource}
+        onOpenEqualizer={() => setIsEqualizerOpen(true)}
+        onOpenCustomization={() => setIsCustomizationOpen(true)}
+        onOpenScanner={() => setIsScannerOpen(true)}
+        onVerifyPaths={handleVerifyPaths}
+        themeSettings={themeSettings}
+        tracksCount={tracks.length}
+      />
+
+      {/* Storage Scanner & Paths Manager Modal (Requirements 2 & 4) */}
+      <StorageScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        tracks={tracks}
+        onRefreshLibrary={refreshLibrary}
+        themeSettings={themeSettings}
+        onNotify={showToast}
+      />
+
+      {/* Fullscreen Player Modal */}
       <NowPlayingFull
         isOpen={isFullPlayerOpen}
         onClose={() => setIsFullPlayerOpen(false)}
@@ -575,15 +713,6 @@ export default function App() {
         playlists={playlists}
         onRefreshPlaylists={refreshLibrary}
         themeSettings={themeSettings}
-      />
-
-      {/* Android Install & APK Modal */}
-      <AndroidInstallModal
-        isOpen={isInstallModalOpen}
-        onClose={() => setIsInstallModalOpen(false)}
-        themeSettings={themeSettings}
-        isInstallable={isInstallable}
-        onInstallPWA={install}
       />
     </div>
   );

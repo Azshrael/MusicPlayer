@@ -20,6 +20,7 @@ import {
 import { Track, ThemeSettings } from '../types';
 import { saveTrack, deleteTrack } from '../services/db';
 import { parseM3U, downloadM3UFile } from '../services/m3uParser';
+import { parseTrackFilename } from '../utils/filenameParser';
 
 interface LibraryViewProps {
   tracks: Track[];
@@ -31,6 +32,7 @@ interface LibraryViewProps {
   themeSettings: ThemeSettings;
   onToggleFavorite: (trackId: string) => void;
   onAddToPlaylistModal: (track: Track) => void;
+  onOpenScanner?: () => void;
 }
 
 export const LibraryView: React.FC<LibraryViewProps> = ({
@@ -43,6 +45,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   themeSettings,
   onToggleFavorite,
   onAddToPlaylistModal,
+  onOpenScanner,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFormat, setSelectedFormat] = useState<'all' | 'flac' | 'wav' | 'mp3' | 'favorites'>('all');
@@ -92,14 +95,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         continue;
       }
 
-      // Parse title / artist from filename: "Artist - Title.mp3"
-      let artist = 'Неизвестный исполнитель';
-      let title = name.replace(/\.[^/.]+$/, '');
-      if (title.includes(' - ')) {
-        const parts = title.split(' - ');
-        artist = parts[0].trim();
-        title = parts.slice(1).join(' - ').trim();
-      }
+      // Parse title / artist from filename according to schemes
+      const { artist, title } = parseTrackFilename(name);
+      const filePath = file.webkitRelativePath || name;
 
       const blobUrl = URL.createObjectURL(file);
       const sizeMb = `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
@@ -127,6 +125,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         bitrate: ext === 'flac' ? '1411 kbps Hi-Res' : ext === 'wav' ? '1536 kbps PCM' : '320 kbps',
         dateAdded: Date.now(),
         blobKey: trackId,
+        filePath,
+        fileName: name,
         isFavorite: false,
       };
 
@@ -248,14 +248,24 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {onOpenScanner && (
+              <button
+                id="btn-scan-memory"
+                onClick={onOpenScanner}
+                className="px-3.5 py-2 rounded-xl text-xs font-bold text-black flex items-center gap-1.5 shadow-md transition active:scale-95 hover:opacity-90"
+                style={{ backgroundColor: accent }}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Сканировать память
+              </button>
+            )}
             <button
               id="btn-add-music"
               onClick={() => fileInputRef.current?.click()}
-              className="px-3.5 py-2 rounded-xl text-xs font-bold text-black flex items-center gap-1.5 shadow-md transition active:scale-95 hover:opacity-90"
-              style={{ backgroundColor: accent }}
+              className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-white flex items-center gap-1.5 transition active:scale-95"
             >
               <Upload className="w-3.5 h-3.5" />
-              Добавить файлы
+              Файлы
             </button>
             <button
               onClick={() => folderInputRef.current?.click()}
@@ -343,20 +353,38 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
       {/* Track List */}
       {filteredTracks.length === 0 ? (
-        <div className="p-8 rounded-3xl bg-white/5 border border-white/10 text-center text-slate-400 space-y-3">
-          <Music2 className="w-10 h-10 mx-auto opacity-40" />
-          <p className="text-sm font-medium">Треки не найдены</p>
-          <p className="text-xs text-slate-500 max-w-sm mx-auto">
-            Нажмите «Добавить файлы», чтобы загрузить песни с памяти Android телефона, или проверьте поисковый фильтр.
-          </p>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="px-4 py-2 rounded-xl text-xs font-bold text-black shadow-md inline-flex items-center gap-1.5"
+        <div className="p-8 sm:p-12 rounded-3xl bg-slate-900/40 border border-white/5 text-center text-slate-400 space-y-4">
+          <div 
+            className="w-14 h-14 rounded-2xl mx-auto flex items-center justify-center text-black font-bold shadow-lg"
             style={{ backgroundColor: accent }}
           >
-            <Upload className="w-3.5 h-3.5" />
-            Выбрать музыку из памяти
-          </button>
+            <Music2 className="w-7 h-7" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-base font-bold text-white">Список треков пуст</p>
+            <p className="text-xs text-slate-400 max-w-sm mx-auto">
+              Запустите автоматическое сканирование памяти телефона или выберите папку/файлы с музыкой.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+            {onOpenScanner && (
+              <button
+                onClick={onOpenScanner}
+                className="px-5 py-2.5 rounded-xl text-xs font-bold text-black shadow-lg inline-flex items-center gap-2 transition hover:scale-105 active:scale-95"
+                style={{ backgroundColor: accent }}
+              >
+                <Sparkles className="w-4 h-4" />
+                Сканировать память устройства
+              </button>
+            )}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/15 text-white inline-flex items-center gap-1.5 transition active:scale-95"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Выбрать файлы
+            </button>
+          </div>
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -424,6 +452,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <p className="text-xs text-slate-400 truncate mt-0.5">
                     {track.artist} {track.album ? `• ${track.album}` : ''}
                   </p>
+
+                  {/* File Path if stored */}
+                  {track.filePath && (
+                    <p className="text-[10px] text-slate-500 font-mono truncate mt-0.5" title={track.filePath}>
+                      📁 {track.filePath}
+                    </p>
+                  )}
 
                   <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono mt-0.5">
                     <span>{formatTime(track.duration)}</span>

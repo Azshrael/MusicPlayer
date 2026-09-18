@@ -37,6 +37,7 @@ class AudioEngine {
 
   private onTimeUpdateCallback: ((time: number, duration: number) => void) | null = null;
   private onTrackEndedCallback: (() => void) | null = null;
+  private onTrackErrorCallback: ((err: any) => void) | null = null;
 
   private eqState: EqualizerState = { ...DEFAULT_EQ_STATE };
 
@@ -56,6 +57,12 @@ class AudioEngine {
         this.onTrackEndedCallback();
       }
     });
+
+    this.audio.addEventListener('error', (e) => {
+      if (this.onTrackErrorCallback) {
+        this.onTrackErrorCallback(e);
+      }
+    });
   }
 
   public setOnTimeUpdate(cb: (time: number, duration: number) => void): void {
@@ -64,6 +71,10 @@ class AudioEngine {
 
   public setOnTrackEnded(cb: () => void): void {
     this.onTrackEndedCallback = cb;
+  }
+
+  public setOnTrackError(cb: (err: any) => void): void {
+    this.onTrackErrorCallback = cb;
   }
 
   public async loadTrack(url: string): Promise<void> {

@@ -15,6 +15,8 @@ export interface Track {
   fileSize?: string;
   dateAdded: number;
   blobKey?: string; // key in IndexedDB for offline audio data
+  filePath?: string; // Local storage path on phone
+  fileName?: string; // Original filename
   nasPath?: string;
   yandexId?: string;
   isFavorite?: boolean;
